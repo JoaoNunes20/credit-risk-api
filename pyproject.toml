@@ -1,0 +1,22 @@
+[project]
+name = "credit-risk-api"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "João Nunes", email = "joaoonunes107@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "joblib>=1.6.0",
+    "lightgbm>=4.7.0",
+    "pandas>=3.1.0",
+    "scikit-learn>=1.9.1",
+]
+
+[project.scripts]
+credit-risk-api = "credit_risk_api:main"
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
