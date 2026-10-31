@@ -15,30 +15,41 @@ from sklearn.model_selection import train_test_split
 DATA_PATH = Path("data/raw/application_train.csv")
 MODEL_DIR = Path("models")
 
-# A small, readable feature set keeps the API input simple.
+# Feature set chosen in notebooks/03_information_value.ipynb:
+# the original baseline minus sensitive attributes, plus OCCUPATION_TYPE.
 NUMERIC_FEATURES = [
+    "EXT_SOURCE_1",
+    "EXT_SOURCE_2",
+    "EXT_SOURCE_3",
     "AMT_INCOME_TOTAL",
     "AMT_CREDIT",
     "AMT_ANNUITY",
     "AMT_GOODS_PRICE",
-    "DAYS_BIRTH",
     "DAYS_EMPLOYED",
-    "EXT_SOURCE_1",
-    "EXT_SOURCE_2",
-    "EXT_SOURCE_3",
 ]
 CATEGORICAL_FEATURES = [
-    "CODE_GENDER",
     "NAME_CONTRACT_TYPE",
     "NAME_EDUCATION_TYPE",
+    "OCCUPATION_TYPE",
 ]
 FEATURES = NUMERIC_FEATURES + CATEGORICAL_FEATURES
 TARGET = "TARGET"
 
+# Attributes deliberately left out of the model, with the reason for each.
+EXCLUDED_FEATURES = {
+    "CODE_GENDER": "sex: prohibited in EU credit decisions (Directive 2004/113/EC)",
+    "DAYS_BIRTH": "age: protected characteristic, excluded as a precaution",
+    "NAME_FAMILY_STATUS": "family status: sensitive, excluded as a precaution",
+    "CNT_CHILDREN": "family status proxy",
+    "CNT_FAM_MEMBERS": "family status proxy",
+    "REGION_RATING_CLIENT": "geography: potential proxy for protected groups",
+    "REGION_RATING_CLIENT_W_CITY": "geography: potential proxy for protected groups",
+    "REGION_POPULATION_RELATIVE": "geography: potential proxy for protected groups",
+}
+
 
 def load_data() -> pd.DataFrame:
     df = pd.read_csv(DATA_PATH, usecols=FEATURES + [TARGET])
-    df = df[df["CODE_GENDER"] != "XNA"]  # only 4 rows; the API accepts F/M only
     # 365243 is a placeholder for "not employed" (pensioners): treat as missing.
     df["DAYS_EMPLOYED"] = df["DAYS_EMPLOYED"].mask(df["DAYS_EMPLOYED"] == 365243)
     for col in CATEGORICAL_FEATURES:
@@ -74,9 +85,10 @@ def main() -> None:
         "categorical": {
             col: list(X_train[col].cat.categories) for col in CATEGORICAL_FEATURES
         },
+        "excluded_features": EXCLUDED_FEATURES,
         "test_auc": round(auc, 4),
     }
-    (MODEL_DIR / "metadata.json").write_text(json.dumps(metadata, indent=2))
+    (MODEL_DIR / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     print(f"Saved model and metadata to {MODEL_DIR}/")
 
 
