@@ -1,4 +1,112 @@
+"""Prediction API for the credit-risk model.
+
+Run from the project root:
+    uv run uvicorn credit_risk_api.api:app --reload
+"""
+import json
+from pathlib import Path
+from typing import Literal, get_args
+
+import joblib
+import pandas as pd
 from fastapi import FastAPI
+from pydantic import BaseModel, Field
+
+MODEL_DIR = Path("models")
+
+# Loaded once at startup, not on every request.
+model = joblib.load(MODEL_DIR / "model.joblib")
+metadata = json.loads((MODEL_DIR / "metadata.json").read_text())
+
+ContractType = Literal["Cash loans", "Revolving loans"]
+EducationType = Literal[
+    "Academic degree",
+    "Higher education",
+    "Incomplete higher",
+    "Lower secondary",
+    "Secondary / secondary special",
+]
+OccupationType = Literal[
+    "Accountants",
+    "Cleaning staff",
+    "Cooking staff",
+    "Core staff",
+    "Drivers",
+    "HR staff",
+    "High skill tech staff",
+    "IT staff",
+    "Laborers",
+    "Low-skill Laborers",
+    "Managers",
+    "Medicine staff",
+    "Private service staff",
+    "Realty agents",
+    "Sales staff",
+    "Secretaries",
+    "Security staff",
+    "Waiters/barmen staff",
+]
+
+
+class LoanApplication(BaseModel):
+    """Input schema: one field per model feature, in lowercase."""
+
+    ext_source_1: float | None = Field(None, ge=0, le=1, description="External credit score 1 (0 to 1)")
+    ext_source_2: float | None = Field(None, ge=0, le=1, description="External credit score 2 (0 to 1)")
+    ext_source_3: float | None = Field(None, ge=0, le=1, description="External credit score 3 (0 to 1)")
+    amt_income_total: float = Field(gt=0, description="Annual income of the client")
+    amt_credit: float = Field(gt=0, description="Credit amount of the loan")
+    amt_annuity: float = Field(gt=0, description="Loan annuity (periodic payment)")
+    amt_goods_price: float | None = Field(None, gt=0, description="Price of the goods the loan is for")
+    days_employed: int | None = Field(
+        None, le=0, description="Days employed before the application (negative); null if not employed, e.g. pensioners"
+    )
+    name_contract_type: ContractType
+    name_education_type: EducationType
+    occupation_type: OccupationType | None = None
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "ext_source_1": 0.5,
+                    "ext_source_2": 0.6,
+                    "ext_source_3": 0.55,
+                    "amt_income_total": 180000,
+                    "amt_credit": 500000,
+                    "amt_annuity": 25000,
+                    "amt_goods_price": 450000,
+                    "days_employed": -2000,
+                    "name_contract_type": "Cash loans",
+                    "name_education_type": "Higher education",
+                    "occupation_type": "Laborers",
+                }
+            ]
+        }
+    }
+
+
+class Prediction(BaseModel):
+    default_probability: float
+
+
+def check_contract() -> None:
+    """Fail at startup if the API schema does not match the trained model."""
+    api_features = sorted(name.upper() for name in LoanApplication.model_fields)
+    if api_features != sorted(metadata["features"]):
+        raise RuntimeError("API fields do not match the model features in metadata.json")
+
+    categories = {
+        "NAME_CONTRACT_TYPE": ContractType,
+        "NAME_EDUCATION_TYPE": EducationType,
+        "OCCUPATION_TYPE": OccupationType,
+    }
+    for col, literal in categories.items():
+        if list(get_args(literal)) != metadata["categorical"][col]:
+            raise RuntimeError(f"API categories for {col} do not match metadata.json")
+
+
+check_contract()
 
 app = FastAPI(title="Credit Risk API", version="0.1.0")
 
@@ -6,3 +114,28 @@ app = FastAPI(title="Credit Risk API", version="0.1.0")
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/model-info")
+def model_info() -> dict:
+    return {
+        "features": metadata["features"],
+        "excluded_features": metadata["excluded_features"],
+        "test_auc": metadata["test_auc"],
+    }
+
+
+@app.post("/predict")
+def predict(application: LoanApplication) -> Prediction:
+    # Rename fields to the model's column names and keep the training column order.
+    row = {name.upper(): value for name, value in application.model_dump().items()}
+    X = pd.DataFrame([row], columns=metadata["features"])
+
+    # Rebuild the exact dtypes used in training: categories and floats (None -> NaN).
+    for col, categories in metadata["categorical"].items():
+        X[col] = pd.Categorical(X[col], categories=categories)
+    numeric = [col for col in metadata["features"] if col not in metadata["categorical"]]
+    X[numeric] = X[numeric].astype("float64")
+
+    probability = float(model.predict_proba(X)[0, 1])
+    return Prediction(default_probability=round(probability, 4))
