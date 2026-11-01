@@ -9,6 +9,5 @@ wheels/
 # Virtual environments
 .venv
 
-# Data and model artifacts
+# Data (the trained model in models/ is tracked: small and needed for deployment and CI)
 data/
-models/

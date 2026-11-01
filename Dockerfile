@@ -27,4 +27,5 @@ RUN uv sync --locked --no-dev
 EXPOSE 8000
 
 # 0.0.0.0 makes the server reachable from outside the container.
-CMD ["/app/.venv/bin/uvicorn", "credit_risk_api.api:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use the port given by the platform (PORT), or 8000 when running locally.
+CMD ["sh", "-c", "/app/.venv/bin/uvicorn credit_risk_api.api:app --host 0.0.0.0 --port ${PORT:-8000}"]

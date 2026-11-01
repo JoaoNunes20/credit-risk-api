@@ -1,0 +1,59 @@
+{
+  "features": [
+    "EXT_SOURCE_1",
+    "EXT_SOURCE_2",
+    "EXT_SOURCE_3",
+    "AMT_INCOME_TOTAL",
+    "AMT_CREDIT",
+    "AMT_ANNUITY",
+    "AMT_GOODS_PRICE",
+    "DAYS_EMPLOYED",
+    "NAME_CONTRACT_TYPE",
+    "NAME_EDUCATION_TYPE",
+    "OCCUPATION_TYPE"
+  ],
+  "categorical": {
+    "NAME_CONTRACT_TYPE": [
+      "Cash loans",
+      "Revolving loans"
+    ],
+    "NAME_EDUCATION_TYPE": [
+      "Academic degree",
+      "Higher education",
+      "Incomplete higher",
+      "Lower secondary",
+      "Secondary / secondary special"
+    ],
+    "OCCUPATION_TYPE": [
+      "Accountants",
+      "Cleaning staff",
+      "Cooking staff",
+      "Core staff",
+      "Drivers",
+      "HR staff",
+      "High skill tech staff",
+      "IT staff",
+      "Laborers",
+      "Low-skill Laborers",
+      "Managers",
+      "Medicine staff",
+      "Private service staff",
+      "Realty agents",
+      "Sales staff",
+      "Secretaries",
+      "Security staff",
+      "Waiters/barmen staff"
+    ]
+  },
+  "excluded_features": {
+    "CODE_GENDER": "sex: prohibited in EU credit decisions (Directive 2004/113/EC)",
+    "DAYS_BIRTH": "age: protected characteristic, excluded as a precaution",
+    "NAME_FAMILY_STATUS": "family status: sensitive, excluded as a precaution",
+    "CNT_CHILDREN": "family status proxy",
+    "CNT_FAM_MEMBERS": "family status proxy",
+    "REGION_RATING_CLIENT": "geography: potential proxy for protected groups",
+    "REGION_RATING_CLIENT_W_CITY": "geography: potential proxy for protected groups",
+    "REGION_POPULATION_RELATIVE": "geography: potential proxy for protected groups"
+  },
+  "test_auc": 0.7497
+}
