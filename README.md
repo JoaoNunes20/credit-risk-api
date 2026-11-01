@@ -1,5 +1,7 @@
 # Credit Risk API
 
+[![CI](https://github.com/JoaoNunes20/credit-risk-api/actions/workflows/ci.yml/badge.svg)](https://github.com/JoaoNunes20/credit-risk-api/actions/workflows/ci.yml)
+
 An end-to-end machine learning project that takes a credit default model from
 training to a deployed, containerized prediction service.
 
