@@ -1,52 +1,205 @@
-# OSS Message Classifier - NLP Project
+# Credit Risk API
 
-This repository contains a Natural Language Processing (NLP) project developed for the course *Natural Language Processing* (MSc in Artificial Intelligence, 1st year, 2nd semester). The project focuses on classifying online messages from open-source software platforms (GitHub, Bugzilla, NNTP) into **request** and **non-request** categories using various machine learning models and word embeddings.
+An end-to-end machine learning project that takes a credit default model from
+training to a deployed, containerized prediction service.
 
----
+The focus is on **ML engineering**: serving, validation, testing, packaging,
+deployment and monitoring. The model is a deliberately simple baseline; the goal
+is to build everything around it the way it would be built in production.
 
-## 🚀 How to Run the Project
+> **Status:** work in progress. The model, the prediction API, the test suite
+> and the Docker image are done; cloud deployment is next. See the
+> [roadmap](#roadmap).
 
-1. **Clone the repository:**
+## The problem
+
+Given a loan application, predict the probability that the client will have
+payment difficulties. The data comes from the
+[Home Credit Default Risk](https://www.kaggle.com/competitions/home-credit-default-risk)
+Kaggle competition: 307,511 applications, of which about 8% defaulted.
+
+Because the classes are imbalanced, the model is evaluated with **ROC AUC**
+rather than accuracy (predicting "no default" for everyone would already be
+92% accurate).
+
+## The model
+
+A LightGBM classifier trained on 11 features:
+
+| Type | Features |
+|---|---|
+| External credit scores | `EXT_SOURCE_1`, `EXT_SOURCE_2`, `EXT_SOURCE_3` |
+| Loan and income amounts | `AMT_INCOME_TOTAL`, `AMT_CREDIT`, `AMT_ANNUITY`, `AMT_GOODS_PRICE` |
+| Employment | `DAYS_EMPLOYED`, `OCCUPATION_TYPE` |
+| Other | `NAME_CONTRACT_TYPE`, `NAME_EDUCATION_TYPE` |
+
+**Test ROC AUC: 0.750** on a stratified 80/20 split.
+
+### Feature selection
+
+Features were selected by combining Information Value (IV) analysis with
+model-based comparisons ([notebook 03](notebooks/03_information_value.ipynb)).
+Two findings shaped the final set:
+
+- **IV alone underperformed.** The top 12 features by IV scored lower than the
+  hand-picked baseline. IV evaluates each feature in isolation, so it misses
+  interactions such as the relationship between the loan amount, the annuity
+  and the price of the goods, which a tree-based model exploits.
+- **High-cardinality categoricals can hurt.** `ORGANIZATION_TYPE` (58
+  categories) had a high IV but lowered test AUC when added to the model.
+
+### Excluded attributes
+
+Sensitive attributes are excluded from the model by design, even where they
+carried predictive signal:
+
+| Attribute | Reason |
+|---|---|
+| `CODE_GENDER` | Sex may not be used in EU credit decisions (Directive 2004/113/EC) |
+| `DAYS_BIRTH` | Age is a protected characteristic; excluded as a precaution |
+| Family status (`NAME_FAMILY_STATUS`, `CNT_CHILDREN`, `CNT_FAM_MEMBERS`) | Sensitive; excluded as a precaution |
+| Region (`REGION_RATING_CLIENT*`, `REGION_POPULATION_RELATIVE`) | Potential proxies for protected groups |
+
+Removing these cost roughly 0.005 AUC. The list, with reasons, lives in
+`EXCLUDED_FEATURES` in the training script, is saved alongside the model, is
+exposed by the API's `/model-info` endpoint and is enforced by a test.
+
+### Known limitations
+
+- **Proxies.** Removing a sensitive attribute does not guarantee the model
+  ignores it. `OCCUPATION_TYPE` is correlated with gender for some
+  occupations, and the external scores (`EXT_SOURCE_*`) are produced by third
+  parties that may use age or other sensitive data. A bias audit across
+  protected groups is planned.
+- **Single split.** Model comparisons used one train/test split. Differences
+  of around 0.002 AUC are within the noise of a single split; cross-validation
+  would give more reliable comparisons.
+
+## The API
+
+A [FastAPI](https://fastapi.tiangolo.com/) service with three endpoints:
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Liveness check |
+| `GET` | `/model-info` | Model features, excluded attributes and test AUC |
+| `POST` | `/predict` | Default probability for one loan application |
+
+Example request:
 
 ```bash
-git clone https://github.com/your-username/oss-message-classifier.git
-cd oss-message-classifier
+curl -X POST http://127.0.0.1:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ext_source_1": 0.5,
+    "ext_source_2": 0.6,
+    "ext_source_3": 0.55,
+    "amt_income_total": 180000,
+    "amt_credit": 500000,
+    "amt_annuity": 25000,
+    "amt_goods_price": 450000,
+    "days_employed": -2000,
+    "name_contract_type": "Cash loans",
+    "name_education_type": "Higher education",
+    "occupation_type": "Laborers"
+  }'
 ```
 
-2. **Install dependencies:**
+```json
+{"default_probability": 0.0444}
+```
 
-Make sure you are using **Python 3.12**. Then install all required libraries using:
+Interactive documentation is generated automatically at `/docs`.
+
+### Design decisions
+
+- **Strict input validation.** Requests are validated with Pydantic before they
+  reach the model. Unknown categories, out-of-range values (e.g. a credit score
+  above 1, a negative amount) and missing required fields are rejected with a
+  `422` response that names the offending field, instead of silently producing
+  a meaningless prediction.
+- **Optional fields where data can be missing.** External scores, occupation,
+  goods price and days employed accept `null`, which the model handles natively
+  (e.g. `days_employed: null` for pensioners).
+- **Schema checked against the model at startup.** On startup the API compares
+  its input schema with the model's `metadata.json` and refuses to start if they
+  differ, so a retrained model can never be served with a stale schema.
+- **Training/serving consistency.** Each request is rebuilt with the same
+  column order and data types used in training before calling the model.
+
+## Quickstart
+
+Requires [uv](https://docs.astral.sh/uv/) and, for the container,
+[Docker](https://www.docker.com/).
 
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/JoaoNunes20/credit-risk-api.git
+cd credit-risk-api
+uv sync
 ```
 
-3. **Download FastText model (if using FastText embeddings):**
+Download `application_train.csv` from the
+[competition data page](https://www.kaggle.com/competitions/home-credit-default-risk/data)
+(you need to accept the competition rules first) and place it in `data/raw/`.
 
-To use the FastText pre-trained embeddings, download the model from the following link:
-
-📥 [Download FastText model](https://dl.fbaipublicfiles.com/fasttext/vectors-english/crawl-300d-2M-subword.zip)
-
-After downloading, extract the `.zip` file and place the `.bin` model file (`crawl-300d-2M-subword.bin`) in the root directory of the project (or update the path in the notebook accordingly).
-
-4. **Open and run the notebook:**
-
-You can now open the `PLN.ipynb` notebook in Jupyter:
+**Train the model** (saves `models/model.joblib` and `models/metadata.json`):
 
 ```bash
-jupyter notebook PLN.ipynb
+uv run python -m credit_risk_api.train
 ```
 
-Run all cells in sequence to reproduce the results and visualizations.
+**Run the API locally:**
 
----
+```bash
+uv run uvicorn credit_risk_api.api:app --reload
+```
 
-## 📂 Dataset
+**Run the tests:**
 
-The dataset used in this project can be downloaded from:
+```bash
+uv run pytest -v
+```
 
-🔗 https://portulanclarin.net/repository/browse/oss-online-communication-messages/99f89cc203be11ebbc3f02420a0004e1c62281d86e7f4245adc76ab0fa808cfd/
+**Run the API in Docker:**
 
----
+```bash
+docker build -t credit-risk-api .
+docker run --rm -p 8000:8000 credit-risk-api
+```
 
-Feel free to fork, adapt, or contribute!
+Then open http://127.0.0.1:8000/docs.
+
+## Project structure
+
+```
+credit-risk-api/
+├── data/raw/                  # dataset (not tracked)
+├── models/                    # trained model and metadata (not tracked)
+├── notebooks/
+│   ├── 01_exploration.ipynb        # exploratory data analysis
+│   ├── 02_feature_ablation.ipynb   # impact of removing each feature
+│   └── 03_information_value.ipynb  # IV analysis and feature selection
+├── src/credit_risk_api/
+│   ├── train.py               # training script
+│   └── api.py                 # FastAPI service
+├── tests/
+│   └── test_api.py            # API test suite
+├── Dockerfile
+├── pyproject.toml
+└── uv.lock
+```
+
+## Roadmap
+
+- [x] **Phase 1 — Data and baseline model:** exploration, feature selection, training script
+- [x] **Phase 2 — Prediction API:** FastAPI service with input validation
+- [x] **Phase 3 — Containerization and testing:** Docker image and pytest suite
+- [ ] **Phase 4 — Deployment:** public endpoint on a cloud platform
+- [ ] **Phase 5 — CI/CD and monitoring:** GitHub Actions, request logging, drift checks
+- [ ] **Phase 6 — LLM explanation layer:** natural-language explanations of
+  predictions, combining SHAP values with retrieval over credit regulations
+
+## Tech stack
+
+Python 3.13 · uv · pandas · LightGBM · scikit-learn · FastAPI · Pydantic ·
+pytest · Docker
