@@ -1,0 +1,54 @@
+name: CI
+
+# Run on every push to main and on every pull request targeting main.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # Installs the Python version in .python-version and the exact
+      # dependency versions in uv.lock (fails if the lock file is out of date).
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Run tests
+        run: uv run pytest -v
+
+  docker:
+    name: Docker build and smoke test
+    runs-on: ubuntu-latest
+    needs: test  # only build the image if the tests pass
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build image
+        run: docker build -t credit-risk-api .
+
+      # Start the container and check that the API answers on /health.
+      - name: Smoke test
+        run: |
+          docker run -d --name api -p 8000:8000 credit-risk-api
+          for i in $(seq 1 30); do
+            if curl -fs http://127.0.0.1:8000/health; then
+              echo
+              echo "API is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "API did not start in time"
+          docker logs api
+          exit 1
