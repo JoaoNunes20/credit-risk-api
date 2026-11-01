@@ -7,9 +7,14 @@ The focus is on **ML engineering**: serving, validation, testing, packaging,
 deployment and monitoring. The model is a deliberately simple baseline; the goal
 is to build everything around it the way it would be built in production.
 
-> **Status:** work in progress. The model, the prediction API, the test suite
-> and the Docker image are done; cloud deployment is next. See the
-> [roadmap](#roadmap).
+**Live API:** https://credit-risk-api-uo5r.onrender.com (interactive docs)
+
+> Hosted on Render's free tier: after 15 minutes without traffic the service
+> sleeps, so the first request can take up to a minute while it wakes up.
+
+> **Status:** work in progress. The model, the prediction API, the test suite,
+> the Docker image and the cloud deployment are done; CI/CD and monitoring are
+> next. See the [roadmap](#roadmap).
 
 ## The problem
 
@@ -81,14 +86,14 @@ A [FastAPI](https://fastapi.tiangolo.com/) service with three endpoints:
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/health` | Liveness check |
+| `GET` | `/health` | Liveness check (used by the platform's health checks) |
 | `GET` | `/model-info` | Model features, excluded attributes and test AUC |
 | `POST` | `/predict` | Default probability for one loan application |
 
-Example request:
+Example request against the live API:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/predict \
+curl -X POST https://credit-risk-api-uo5r.onrender.com/predict \
   -H "Content-Type: application/json" \
   -d '{
     "ext_source_1": 0.5,
@@ -109,7 +114,8 @@ curl -X POST http://127.0.0.1:8000/predict \
 {"default_probability": 0.0444}
 ```
 
-Interactive documentation is generated automatically at `/docs`.
+Interactive documentation is generated automatically at `/docs`; the root URL
+redirects there.
 
 ### Design decisions
 
@@ -138,11 +144,12 @@ cd credit-risk-api
 uv sync
 ```
 
-Download `application_train.csv` from the
+The trained model is included in the repository, so the API, the tests and the
+Docker image work right after cloning. To retrain it, download
+`application_train.csv` from the
 [competition data page](https://www.kaggle.com/competitions/home-credit-default-risk/data)
-(you need to accept the competition rules first) and place it in `data/raw/`.
-
-**Train the model** (saves `models/model.joblib` and `models/metadata.json`):
+(you need to accept the competition rules first), place it in `data/raw/` and run
+(this overwrites `models/model.joblib` and `models/metadata.json`):
 
 ```bash
 uv run python -m credit_risk_api.train
@@ -169,12 +176,27 @@ docker run --rm -p 8000:8000 credit-risk-api
 
 Then open http://127.0.0.1:8000/docs.
 
+## Deployment
+
+The service runs on [Render](https://render.com) as a Docker web service, built
+directly from the `Dockerfile` in this repository:
+
+- **Continuous deployment.** Every push to `main` triggers a new build and
+  deploy; previous versions can be restored with a one-click rollback.
+- **Health checks.** Render polls `/health` to verify the service is up.
+- **Configurable port.** The container listens on the port given by the
+  platform's `PORT` environment variable, falling back to 8000 locally, so the
+  same image runs unchanged on Render and on a laptop.
+- **Model shipped with the code.** At 1.7 MB, the trained model is versioned in
+  git alongside the code that serves it. Larger models would instead live in a
+  model registry or object storage and be fetched at build or start time.
+
 ## Project structure
 
 ```
 credit-risk-api/
 ├── data/raw/                  # dataset (not tracked)
-├── models/                    # trained model and metadata (not tracked)
+├── models/                    # trained model and metadata
 ├── notebooks/
 │   ├── 01_exploration.ipynb        # exploratory data analysis
 │   ├── 02_feature_ablation.ipynb   # impact of removing each feature
@@ -194,7 +216,7 @@ credit-risk-api/
 - [x] **Phase 1 — Data and baseline model:** exploration, feature selection, training script
 - [x] **Phase 2 — Prediction API:** FastAPI service with input validation
 - [x] **Phase 3 — Containerization and testing:** Docker image and pytest suite
-- [ ] **Phase 4 — Deployment:** public endpoint on a cloud platform
+- [x] **Phase 4 — Deployment:** public endpoint on Render with continuous deployment
 - [ ] **Phase 5 — CI/CD and monitoring:** GitHub Actions, request logging, drift checks
 - [ ] **Phase 6 — LLM explanation layer:** natural-language explanations of
   predictions, combining SHAP values with retrieval over credit regulations
@@ -202,4 +224,4 @@ credit-risk-api/
 ## Tech stack
 
 Python 3.13 · uv · pandas · LightGBM · scikit-learn · FastAPI · Pydantic ·
-pytest · Docker
+pytest · Docker · Render
