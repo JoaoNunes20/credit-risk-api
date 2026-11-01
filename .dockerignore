@@ -1,0 +1,10 @@
+# Keep the build context small and free of local-only files.
+.venv/
+.git/
+data/
+notebooks/
+tests/
+__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
