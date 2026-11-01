@@ -4,17 +4,27 @@ Run from the project root:
     uv run uvicorn credit_risk_api.api:app --reload
 """
 import json
+import logging
+import time
 from pathlib import Path
 from typing import Literal, get_args
 
 import joblib
 import pandas as pd
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
-from fastapi.responses import RedirectResponse
-
 MODEL_DIR = Path("models")
+
+# One JSON line per prediction on stdout, so the platform's log viewer
+# (or any log collector) can search and aggregate them.
+logger = logging.getLogger("credit_risk_api")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
 
 # Loaded once at startup, not on every request.
 model = joblib.load(MODEL_DIR / "model.joblib")
@@ -134,6 +144,8 @@ def model_info() -> dict:
 
 @app.post("/predict")
 def predict(application: LoanApplication) -> Prediction:
+    start = time.perf_counter()
+
     # Rename fields to the model's column names and keep the training column order.
     row = {name.upper(): value for name, value in application.model_dump().items()}
     X = pd.DataFrame([row], columns=metadata["features"])
@@ -144,5 +156,16 @@ def predict(application: LoanApplication) -> Prediction:
     numeric = [col for col in metadata["features"] if col not in metadata["categorical"]]
     X[numeric] = X[numeric].astype("float64")
 
-    probability = float(model.predict_proba(X)[0, 1])
-    return Prediction(default_probability=round(probability, 4))
+    probability = round(float(model.predict_proba(X)[0, 1]), 4)
+
+    logger.info(
+        json.dumps(
+            {
+                "event": "prediction",
+                "default_probability": probability,
+                "latency_ms": round((time.perf_counter() - start) * 1000, 2),
+                "inputs": application.model_dump(),
+            }
+        )
+    )
+    return Prediction(default_probability=probability)

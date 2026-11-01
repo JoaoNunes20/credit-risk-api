@@ -3,6 +3,8 @@
 Run from the project root (requires a trained model in models/):
     uv run pytest
 """
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -75,3 +77,21 @@ def test_sensitive_attributes_are_not_model_inputs():
     for attribute in ("CODE_GENDER", "DAYS_BIRTH", "NAME_FAMILY_STATUS"):
         assert attribute not in info["features"]
         assert attribute in info["excluded_features"]
+
+
+def test_root_redirects_to_docs():
+    response = client.get("/", follow_redirects=False)
+    assert response.status_code == 307
+    assert response.headers["location"] == "/docs"
+
+
+def test_prediction_is_logged(caplog):
+    caplog.set_level("INFO", logger="credit_risk_api")
+    response = client.post("/predict", json=VALID_APPLICATION)
+
+    records = [r for r in caplog.records if r.name == "credit_risk_api"]
+    assert len(records) == 1
+    entry = json.loads(records[0].getMessage())
+    assert entry["event"] == "prediction"
+    assert entry["default_probability"] == response.json()["default_probability"]
+    assert entry["inputs"]["amt_credit"] == VALID_APPLICATION["amt_credit"]
