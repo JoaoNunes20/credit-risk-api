@@ -12,6 +12,8 @@ import pandas as pd
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
+from fastapi.responses import RedirectResponse
+
 MODEL_DIR = Path("models")
 
 # Loaded once at startup, not on every request.
@@ -114,6 +116,11 @@ app = FastAPI(title="Credit Risk API", version="0.1.0")
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/", include_in_schema=False)
+def root() -> RedirectResponse:
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/model-info")
