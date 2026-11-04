@@ -102,6 +102,18 @@ class Prediction(BaseModel):
     default_probability: float
 
 
+class FeatureContribution(BaseModel):
+    feature: str
+    value: float | str | None
+    contribution: float = Field(description="SHAP value in log-odds; positive increases default risk")
+
+
+class Explanation(BaseModel):
+    default_probability: float
+    baseline_log_odds: float = Field(description="Model output before any feature is taken into account")
+    contributions: list[FeatureContribution] = Field(description="Sorted by absolute impact, largest first")
+
+
 def check_contract() -> None:
     """Fail at startup if the API schema does not match the trained model."""
     api_features = sorted(name.upper() for name in LoanApplication.model_fields)
@@ -142,11 +154,8 @@ def model_info() -> dict:
     }
 
 
-@app.post("/predict")
-def predict(application: LoanApplication) -> Prediction:
-    start = time.perf_counter()
-
-    # Rename fields to the model's column names and keep the training column order.
+def to_model_input(application: LoanApplication) -> pd.DataFrame:
+    """One-row DataFrame with the column names, order and dtypes used in training."""
     row = {name.upper(): value for name, value in application.model_dump().items()}
     X = pd.DataFrame([row], columns=metadata["features"])
 
@@ -155,7 +164,13 @@ def predict(application: LoanApplication) -> Prediction:
         X[col] = pd.Categorical(X[col], categories=categories)
     numeric = [col for col in metadata["features"] if col not in metadata["categorical"]]
     X[numeric] = X[numeric].astype("float64")
+    return X
 
+
+@app.post("/predict")
+def predict(application: LoanApplication) -> Prediction:
+    start = time.perf_counter()
+    X = to_model_input(application)
     probability = round(float(model.predict_proba(X)[0, 1]), 4)
 
     logger.info(
@@ -169,3 +184,33 @@ def predict(application: LoanApplication) -> Prediction:
         )
     )
     return Prediction(default_probability=probability)
+
+
+@app.post("/explain")
+def explain(application: LoanApplication) -> Explanation:
+    """Prediction plus the contribution of each feature (SHAP values).
+
+    LightGBM computes exact TreeSHAP values natively (pred_contrib=True), so no
+    extra library is needed. Contributions are in log-odds and add up, together
+    with the baseline, to the model's raw output for this application.
+    """
+    X = to_model_input(application)
+    probability = round(float(model.predict_proba(X)[0, 1]), 4)
+    shap_values = model.predict(X, pred_contrib=True)[0]  # one value per feature, then the baseline
+
+    inputs = application.model_dump()
+    contributions = [
+        FeatureContribution(
+            feature=col.lower(),
+            value=inputs[col.lower()],
+            contribution=round(float(shap_value), 4),
+        )
+        for col, shap_value in zip(metadata["features"], shap_values[:-1])
+    ]
+    contributions.sort(key=lambda c: abs(c.contribution), reverse=True)
+
+    return Explanation(
+        default_probability=probability,
+        baseline_log_odds=round(float(shap_values[-1]), 4),
+        contributions=contributions,
+    )

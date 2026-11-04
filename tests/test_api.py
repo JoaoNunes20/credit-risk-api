@@ -4,6 +4,7 @@ Run from the project root (requires a trained model in models/):
     uv run pytest
 """
 import json
+import math
 
 import pytest
 from fastapi.testclient import TestClient
@@ -95,3 +96,19 @@ def test_prediction_is_logged(caplog):
     assert entry["event"] == "prediction"
     assert entry["default_probability"] == response.json()["default_probability"]
     assert entry["inputs"]["amt_credit"] == VALID_APPLICATION["amt_credit"]
+
+
+def test_explain_contributions_add_up_to_the_prediction():
+    explanation = client.post("/explain", json=VALID_APPLICATION).json()
+    log_odds = explanation["baseline_log_odds"] + sum(
+        c["contribution"] for c in explanation["contributions"]
+    )
+    probability = 1 / (1 + math.exp(-log_odds))
+    assert probability == pytest.approx(explanation["default_probability"], abs=1e-3)
+
+
+def test_explain_covers_every_feature_sorted_by_impact():
+    contributions = client.post("/explain", json=VALID_APPLICATION).json()["contributions"]
+    assert {c["feature"] for c in contributions} == set(VALID_APPLICATION)
+    impacts = [abs(c["contribution"]) for c in contributions]
+    assert impacts == sorted(impacts, reverse=True)
