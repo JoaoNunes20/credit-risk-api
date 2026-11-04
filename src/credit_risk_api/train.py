@@ -12,6 +12,8 @@ import pandas as pd
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import train_test_split
 
+from credit_risk_api.drift import build_reference
+
 DATA_PATH = Path("data/raw/application_train.csv")
 MODEL_DIR = Path("models")
 
@@ -89,7 +91,11 @@ def main() -> None:
         "test_auc": round(auc, 4),
     }
     (MODEL_DIR / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
-    print(f"Saved model and metadata to {MODEL_DIR}/")
+
+    # Training distribution of each feature, the baseline for drift monitoring.
+    reference = build_reference(X_train, CATEGORICAL_FEATURES)
+    (MODEL_DIR / "reference.json").write_text(json.dumps(reference, indent=2) + "\n")
+    print(f"Saved model, metadata and drift reference to {MODEL_DIR}/")
 
 
 if __name__ == "__main__":
