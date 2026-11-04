@@ -6,7 +6,7 @@ An end-to-end machine learning project that takes a credit default model from
 training to a deployed, containerized prediction service.
 
 The focus is on **ML engineering**: serving, validation, testing, packaging,
-deployment and monitoring. The model is a deliberately simple baseline; the goal
+continuous integration, deployment and monitoring. The model is a deliberately simple baseline; the goal
 is to build everything around it the way it would be built in production.
 
 **Live API:** https://credit-risk-api-uo5r.onrender.com (interactive docs)
@@ -14,9 +14,9 @@ is to build everything around it the way it would be built in production.
 > Hosted on Render's free tier: after 15 minutes without traffic the service
 > sleeps, so the first request can take up to a minute while it wakes up.
 
-> **Status:** work in progress. The model, the prediction API, the test suite,
-> the Docker image and the cloud deployment are done; CI/CD and monitoring are
-> next. See the [roadmap](#roadmap).
+> **Status:** the model, the API, the tests, the Docker image, CI/CD, the cloud
+> deployment and drift monitoring are done; an LLM explanation layer is next.
+> See the [roadmap](#roadmap).
 
 ## The problem
 
@@ -163,7 +163,7 @@ uv run python -m credit_risk_api.train
 uv run uvicorn credit_risk_api.api:app --reload
 ```
 
-**Run the tests:**
+**Run the tests** (API and drift monitoring):
 
 ```bash
 uv run pytest -v
@@ -178,13 +178,22 @@ docker run --rm -p 8000:8000 credit-risk-api
 
 Then open http://127.0.0.1:8000/docs.
 
-## Deployment
+## CI/CD
+
+Every push and pull request to `main` runs a [GitHub Actions workflow](.github/workflows/ci.yml)
+on a clean machine:
+
+1. **Tests:** installs the exact locked dependencies with uv and runs the
+   pytest suite.
+2. **Docker build and smoke test:** runs only if the tests pass; builds the
+   image, starts a container and checks that `/health` answers.
 
 The service runs on [Render](https://render.com) as a Docker web service, built
 directly from the `Dockerfile` in this repository:
 
-- **Continuous deployment.** Every push to `main` triggers a new build and
-  deploy; previous versions can be restored with a one-click rollback.
+- **Continuous deployment gated by CI.** Render deploys a commit to `main` only
+  after the CI checks pass, so code with failing tests never reaches
+  production; previous versions can be restored with a one-click rollback.
 - **Health checks.** Render polls `/health` to verify the service is up.
 - **Configurable port.** The container listens on the port given by the
   platform's `PORT` environment variable, falling back to 8000 locally, so the
@@ -193,21 +202,87 @@ directly from the `Dockerfile` in this repository:
   git alongside the code that serves it. Larger models would instead live in a
   model registry or object storage and be fetched at build or start time.
 
+## Monitoring
+
+### Prediction logging
+
+Every prediction is logged to stdout as one JSON line, which the platform's log
+viewer (or any log collector) can search and aggregate:
+
+```json
+{"event": "prediction", "default_probability": 0.0444, "latency_ms": 124.38, "inputs": {"amt_credit": 500000.0, "...": "..."}}
+```
+
+The log records the predicted probability, the latency and the validated inputs,
+which are needed for drift monitoring. The inputs contain no names or
+identifiers, but they are personal financial data: in a real lender, logging
+them would need a GDPR basis, data minimisation and a retention policy.
+
+### Input drift with the Population Stability Index
+
+[`drift.py`](src/credit_risk_api/drift.py) compares the distribution of the
+inputs received by the API with the training distribution, feature by feature,
+using the **Population Stability Index (PSI)**, the standard stability metric in
+credit scoring:
+
+- At training time, the reference distribution of each feature is saved to
+  `models/reference.json`: decile bins for numeric features and frequencies for
+  categorical ones. Missing values get their own bin, so a sudden rise in
+  missing data (e.g. an upstream source that stops sending a score) is also
+  detected.
+- Each feature is classified as **stable** (PSI < 0.1), **warning**
+  (0.1 to 0.25) or **ALERT** (≥ 0.25).
+
+To test it without real traffic,
+[`simulate_traffic.py`](src/credit_risk_api/simulate_traffic.py) generates
+2,000 requests from the held-out test set in the API's log format, in two
+scenarios. Results:
+
+| Feature | Stable scenario | Shifted scenario (incomes +30%, 30% of cash loans → revolving) |
+|---|---|---|
+| `AMT_INCOME_TOTAL` | 0.004 (stable) | **0.758 (ALERT)** |
+| `NAME_CONTRACT_TYPE` | 0.000 (stable) | **0.478 (ALERT)** |
+| Other 9 features | ≤ 0.012 (stable) | unchanged (stable) |
+
+The monitor flags exactly the two features that changed and nothing else. The
+non-zero PSI in the stable scenario is sampling noise from a 2,000-request
+sample.
+
+Input drift is an **early warning**, not a measure of model quality: whether
+the model has actually degraded can only be measured once outcomes are known,
+and in credit, defaults surface months after the decision. PSI flags that the
+population has changed long before that.
+
+Run it locally (simulation requires the dataset in `data/raw/`):
+
+```bash
+uv run python -m credit_risk_api.simulate_traffic
+uv run python -m credit_risk_api.drift data/simulated/shifted.jsonl
+```
+
+The same command works on prediction logs exported from the platform; any text
+before the JSON on each line (such as timestamps) is ignored.
+
 ## Project structure
 
 ```
 credit-risk-api/
 ├── data/raw/                  # dataset (not tracked)
-├── models/                    # trained model and metadata
+├── .github/workflows/
+│   └── ci.yml                 # CI: tests, Docker build and smoke test
+├── models/                    # trained model, metadata and drift reference
 ├── notebooks/
 │   ├── 01_exploration.ipynb        # exploratory data analysis
 │   ├── 02_feature_ablation.ipynb   # impact of removing each feature
 │   └── 03_information_value.ipynb  # IV analysis and feature selection
 ├── src/credit_risk_api/
 │   ├── train.py               # training script
-│   └── api.py                 # FastAPI service
+│   ├── api.py                 # FastAPI service
+│   ├── drift.py               # PSI drift monitoring
+│   └── simulate_traffic.py    # simulated traffic for drift checks
 ├── tests/
-│   └── test_api.py            # API test suite
+│   ├── test_api.py            # API tests
+│   └── test_drift.py          # drift monitoring tests
 ├── Dockerfile
 ├── pyproject.toml
 └── uv.lock
@@ -219,11 +294,11 @@ credit-risk-api/
 - [x] **Phase 2 — Prediction API:** FastAPI service with input validation
 - [x] **Phase 3 — Containerization and testing:** Docker image and pytest suite
 - [x] **Phase 4 — Deployment:** public endpoint on Render with continuous deployment
-- [ ] **Phase 5 — CI/CD and monitoring:** GitHub Actions, request logging, drift checks
+- [x] **Phase 5 — CI/CD and monitoring:** GitHub Actions, structured prediction logs, PSI drift monitoring
 - [ ] **Phase 6 — LLM explanation layer:** natural-language explanations of
   predictions, combining SHAP values with retrieval over credit regulations
 
 ## Tech stack
 
 Python 3.13 · uv · pandas · LightGBM · scikit-learn · FastAPI · Pydantic ·
-pytest · Docker · Render
+pytest · Docker · GitHub Actions · Render
