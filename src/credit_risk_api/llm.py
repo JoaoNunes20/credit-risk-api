@@ -48,6 +48,9 @@ Rules:
   the loan should be approved or rejected.
 - End with the estimated probability of default compared with the baseline
   for a typical applicant, using the percentages given.
+- Write one flowing paragraph without line breaks or lists. Express the
+  impact labels naturally (e.g. 'strongly', 'slightly') instead of
+  copying them in brackets.
 - Write 4 to 6 sentences in English."""
 
 
