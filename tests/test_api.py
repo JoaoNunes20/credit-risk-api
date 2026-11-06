@@ -9,6 +9,7 @@ import math
 import pytest
 from fastapi.testclient import TestClient
 
+from credit_risk_api import llm
 from credit_risk_api.api import app
 
 client = TestClient(app)
@@ -112,3 +113,53 @@ def test_explain_covers_every_feature_sorted_by_impact():
     assert {c["feature"] for c in contributions} == set(VALID_APPLICATION)
     impacts = [abs(c["contribution"]) for c in contributions]
     assert impacts == sorted(impacts, reverse=True)
+
+
+def test_narrative_returns_llm_text(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setattr(llm, "generate_narrative", lambda explanation: "Mocked explanation.")
+    response = client.post("/explain/narrative", json=VALID_APPLICATION)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["narrative"] == "Mocked explanation."
+    assert len(body["contributions"]) == len(VALID_APPLICATION)
+
+
+def test_narrative_without_api_key_returns_503(monkeypatch):
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    response = client.post("/explain/narrative", json=VALID_APPLICATION)
+    assert response.status_code == 503
+
+
+def test_narrative_provider_error_returns_502(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+
+    def failing_llm(explanation):
+        raise llm.LLMError("provider down")
+
+    monkeypatch.setattr(llm, "generate_narrative", failing_llm)
+    response = client.post("/explain/narrative", json=VALID_APPLICATION)
+    assert response.status_code == 502
+
+
+def test_prompt_uses_readable_names_and_the_probability():
+    explanation = client.post("/explain", json=VALID_APPLICATION).json()
+    prompt = llm.build_prompt(explanation)
+    assert f"{explanation['default_probability']:.1%}" in prompt
+    assert "external credit score" in prompt
+    assert "ext_source" not in prompt  # the LLM never sees raw column codes
+
+
+def test_prompt_turns_values_into_neutral_readable_facts():
+    explanation = client.post("/explain", json=VALID_APPLICATION).json()
+    prompt = llm.build_prompt(explanation)
+    assert "5.5 years" in prompt  # -2000 days, not a negative number
+    assert "500,000" in prompt  # thousands separator, no currency symbol
+    assert "$" not in prompt
+
+
+def test_impact_labels_use_fixed_thresholds():
+    assert llm.impact_label(-0.2276) == "strong"
+    assert llm.impact_label(0.0836) == "moderate"
+    assert llm.impact_label(0.0264) == "small"
+    assert llm.impact_label(-0.005) == "negligible"

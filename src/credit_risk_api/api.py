@@ -11,9 +11,11 @@ from typing import Literal, get_args
 
 import joblib
 import pandas as pd
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
+
+from credit_risk_api import llm
 
 MODEL_DIR = Path("models")
 
@@ -114,6 +116,10 @@ class Explanation(BaseModel):
     contributions: list[FeatureContribution] = Field(description="Sorted by absolute impact, largest first")
 
 
+class NarrativeExplanation(Explanation):
+    narrative: str = Field(description="Plain-language explanation written by an LLM")
+
+
 def check_contract() -> None:
     """Fail at startup if the API schema does not match the trained model."""
     api_features = sorted(name.upper() for name in LoanApplication.model_fields)
@@ -186,8 +192,7 @@ def predict(application: LoanApplication) -> Prediction:
     return Prediction(default_probability=probability)
 
 
-@app.post("/explain")
-def explain(application: LoanApplication) -> Explanation:
+def compute_explanation(application: LoanApplication) -> Explanation:
     """Prediction plus the contribution of each feature (SHAP values).
 
     LightGBM computes exact TreeSHAP values natively (pred_contrib=True), so no
@@ -214,3 +219,23 @@ def explain(application: LoanApplication) -> Explanation:
         baseline_log_odds=round(float(shap_values[-1]), 4),
         contributions=contributions,
     )
+
+
+@app.post("/explain")
+def explain(application: LoanApplication) -> Explanation:
+    """Prediction plus the contribution of each feature (SHAP values)."""
+    return compute_explanation(application)
+
+
+@app.post("/explain/narrative")
+def explain_narrative(application: LoanApplication) -> NarrativeExplanation:
+    """The /explain output plus a plain-language explanation written by an LLM."""
+    if not llm.is_configured():
+        raise HTTPException(status_code=503, detail="LLM explanations are not configured")
+    explanation = compute_explanation(application)
+    try:
+        narrative = llm.generate_narrative(explanation.model_dump())
+    except llm.LLMError as exc:
+        logger.warning(json.dumps({"event": "llm_error", "error": str(exc)}))
+        raise HTTPException(status_code=502, detail="The explanation service is unavailable") from exc
+    return NarrativeExplanation(**explanation.model_dump(), narrative=narrative)
