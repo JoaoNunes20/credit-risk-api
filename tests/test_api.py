@@ -117,12 +117,13 @@ def test_explain_covers_every_feature_sorted_by_impact():
 
 def test_narrative_returns_llm_text(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "test-key")
-    monkeypatch.setattr(llm, "generate_narrative", lambda explanation: "Mocked explanation.")
+    monkeypatch.setattr(llm, "generate_narrative", lambda explanation, context: "Mocked explanation.")
     response = client.post("/explain/narrative", json=VALID_APPLICATION)
     assert response.status_code == 200
     body = response.json()
     assert body["narrative"] == "Mocked explanation."
     assert len(body["contributions"]) == len(VALID_APPLICATION)
+    assert [s["ref"] for s in body["sources"]] == list(range(1, len(body["sources"]) + 1))
 
 
 def test_narrative_without_api_key_returns_503(monkeypatch):
@@ -134,7 +135,7 @@ def test_narrative_without_api_key_returns_503(monkeypatch):
 def test_narrative_provider_error_returns_502(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "test-key")
 
-    def failing_llm(explanation):
+    def failing_llm(explanation, context):
         raise llm.LLMError("provider down")
 
     monkeypatch.setattr(llm, "generate_narrative", failing_llm)
@@ -163,3 +164,64 @@ def test_impact_labels_use_fixed_thresholds():
     assert llm.impact_label(0.0836) == "moderate"
     assert llm.impact_label(0.0264) == "small"
     assert llm.impact_label(-0.005) == "negligible"
+
+
+def test_regulatory_context_covers_strong_factors_and_automated_models():
+    explanation = client.post("/explain", json=VALID_APPLICATION).json()
+    context = llm.regulatory_context(explanation)
+    assert 1 <= len(context) <= llm.MAX_TOPICS_WITH_CONTEXT + 1
+    assert len({c["id"] for c in context}) == len(context)  # no duplicates
+    _, retrieval = llm.RAG_INDEX
+    model_rules = retrieval["topics"]["automated_models"][0]["chunk_id"]
+    assert model_rules in {c["id"] for c in context}
+
+
+def test_prompt_numbers_the_regulatory_excerpts():
+    explanation = client.post("/explain", json=VALID_APPLICATION).json()
+    context = llm.regulatory_context(explanation)
+    prompt = llm.build_prompt(explanation, context)
+    assert "Regulatory excerpts:" in prompt
+    assert f"[{len(context)}]" in prompt
+
+
+def test_regulatory_context_uses_distinct_topics():
+    _, retrieval = llm.RAG_INDEX
+    explanation = {
+        "contributions": [
+            {"feature": "name_education_type", "contribution": -0.23},
+            {"feature": "ext_source_3", "contribution": -0.19},
+            {"feature": "ext_source_2", "contribution": -0.16},  # same topic as ext_source_3
+            {"feature": "amt_credit", "contribution": 0.14},
+            {"feature": "ext_source_1", "contribution": -0.13},
+        ]
+    }
+    expected_topics = ["personal_data", "external_scores", "loan_amount", "automated_models"]
+    expected_ids = []
+    for topic in expected_topics:
+        chunk_id = retrieval["topics"][topic][0]["chunk_id"]
+        if chunk_id not in expected_ids:
+            expected_ids.append(chunk_id)
+    assert [c["id"] for c in llm.regulatory_context(explanation)] == expected_ids
+
+
+def test_find_forbidden_phrases_flags_judgements_and_compliance_claims():
+    text = "Higher education and a score of 0.55 lower the risk slightly; a relatively large loan raises it."
+    assert llm.find_forbidden_phrases(text) == ["large", "relatively"]
+    assert llm.find_forbidden_phrases("The very good score of 0.6 strongly lowers risk.") == ["very good"]
+    assert llm.find_forbidden_phrases("This explanation follows the EBA guidance [1].") == ["follows"]
+    assert llm.find_forbidden_phrases("The guidelines ask lenders to verify information [1].") == []
+
+
+def test_narrative_with_judgements_is_rewritten_once(monkeypatch):
+    replies = iter(["A very good score lowers risk.", "A score of 0.6 lowers risk."])
+    calls = []
+
+    def fake_complete(messages):
+        calls.append(messages)
+        return next(replies)
+
+    monkeypatch.setattr(llm, "_complete", fake_complete)
+    explanation = client.post("/explain", json=VALID_APPLICATION).json()
+    assert llm.generate_narrative(explanation) == "A score of 0.6 lowers risk."
+    assert len(calls) == 2
+    assert "very good" in calls[1][-1]["content"]

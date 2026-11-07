@@ -1,0 +1,107 @@
+{
+ "feature_topics": {
+  "ext_source_1": "external_scores",
+  "ext_source_2": "external_scores",
+  "ext_source_3": "external_scores",
+  "amt_income_total": "income",
+  "amt_credit": "loan_amount",
+  "amt_annuity": "affordability",
+  "amt_goods_price": "collateral",
+  "days_employed": "employment",
+  "occupation_type": "employment",
+  "name_contract_type": "product",
+  "name_education_type": "personal_data"
+ },
+ "topics": {
+  "external_scores": [
+   {
+    "chunk_id": 46,
+    "score": 0.7478
+   },
+   {
+    "chunk_id": 113,
+    "score": 0.7384
+   }
+  ],
+  "income": [
+   {
+    "chunk_id": 120,
+    "score": 0.7461
+   },
+   {
+    "chunk_id": 99,
+    "score": 0.7432
+   }
+  ],
+  "loan_amount": [
+   {
+    "chunk_id": 81,
+    "score": 0.7761
+   },
+   {
+    "chunk_id": 83,
+    "score": 0.7631
+   }
+  ],
+  "affordability": [
+   {
+    "chunk_id": 83,
+    "score": 0.7158
+   },
+   {
+    "chunk_id": 198,
+    "score": 0.705
+   }
+  ],
+  "collateral": [
+   {
+    "chunk_id": 160,
+    "score": 0.7883
+   },
+   {
+    "chunk_id": 161,
+    "score": 0.784
+   }
+  ],
+  "employment": [
+   {
+    "chunk_id": 74,
+    "score": 0.7439
+   },
+   {
+    "chunk_id": 187,
+    "score": 0.7312
+   }
+  ],
+  "product": [
+   {
+    "chunk_id": 34,
+    "score": 0.696
+   },
+   {
+    "chunk_id": 178,
+    "score": 0.6946
+   }
+  ],
+  "personal_data": [
+   {
+    "chunk_id": 77,
+    "score": 0.7813
+   },
+   {
+    "chunk_id": 76,
+    "score": 0.7505
+   }
+  ],
+  "automated_models": [
+   {
+    "chunk_id": 46,
+    "score": 0.8336
+   },
+   {
+    "chunk_id": 99,
+    "score": 0.7458
+   }
+  ]
+ }
+}

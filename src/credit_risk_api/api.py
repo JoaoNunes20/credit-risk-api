@@ -116,8 +116,16 @@ class Explanation(BaseModel):
     contributions: list[FeatureContribution] = Field(description="Sorted by absolute impact, largest first")
 
 
+class Source(BaseModel):
+    ref: int = Field(description="Number used to cite this source in the narrative, e.g. [1]")
+    document: str
+    section: str
+    page: int
+
+
 class NarrativeExplanation(Explanation):
     narrative: str = Field(description="Plain-language explanation written by an LLM")
+    sources: list[Source] = Field(description="Regulatory excerpts given to the LLM, cited by number")
 
 
 def check_contract() -> None:
@@ -233,9 +241,14 @@ def explain_narrative(application: LoanApplication) -> NarrativeExplanation:
     if not llm.is_configured():
         raise HTTPException(status_code=503, detail="LLM explanations are not configured")
     explanation = compute_explanation(application)
+    context = llm.regulatory_context(explanation.model_dump())
     try:
-        narrative = llm.generate_narrative(explanation.model_dump())
+        narrative = llm.generate_narrative(explanation.model_dump(), context)
     except llm.LLMError as exc:
         logger.warning(json.dumps({"event": "llm_error", "error": str(exc)}))
         raise HTTPException(status_code=502, detail="The explanation service is unavailable") from exc
-    return NarrativeExplanation(**explanation.model_dump(), narrative=narrative)
+    sources = [
+        Source(ref=number, document=chunk["source"], section=chunk["section"], page=chunk["page"])
+        for number, chunk in enumerate(context, start=1)
+    ]
+    return NarrativeExplanation(**explanation.model_dump(), narrative=narrative, sources=sources)
