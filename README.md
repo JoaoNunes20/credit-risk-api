@@ -6,7 +6,8 @@ An end-to-end machine learning project that takes a credit default model from
 training to a deployed, containerized prediction service.
 
 The focus is on **ML engineering**: serving, validation, testing, packaging,
-continuous integration, deployment and monitoring. The model is a deliberately simple baseline; the goal
+continuous integration, deployment, monitoring and explainability, including
+LLM-written explanations grounded in EU credit regulation. The model is a deliberately simple baseline; the goal
 is to build everything around it the way it would be built in production.
 
 **Live API:** https://credit-risk-api-uo5r.onrender.com (interactive docs)
@@ -14,9 +15,7 @@ is to build everything around it the way it would be built in production.
 > Hosted on Render's free tier: after 15 minutes without traffic the service
 > sleeps, so the first request can take up to a minute while it wakes up.
 
-> **Status:** the model, the API, the tests, the Docker image, CI/CD, the cloud
-> deployment and drift monitoring are done; an LLM explanation layer is next.
-> See the [roadmap](#roadmap).
+> **Status:** all six phases of the [roadmap](#roadmap) are done.
 
 ## The problem
 
@@ -84,13 +83,17 @@ exposed by the API's `/model-info` endpoint and is enforced by a test.
 
 ## The API
 
-A [FastAPI](https://fastapi.tiangolo.com/) service with three endpoints:
+A [FastAPI](https://fastapi.tiangolo.com/) service with five endpoints:
 
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness check (used by the platform's health checks) |
 | `GET` | `/model-info` | Model features, excluded attributes and test AUC |
 | `POST` | `/predict` | Default probability for one loan application |
+| `POST` | `/explain` | Prediction plus the contribution of each feature (SHAP values) |
+| `POST` | `/explain/narrative` | `/explain` plus a plain-language explanation citing EU credit guidelines |
+
+See [Explainability](#explainability) for the last two.
 
 Example request against the live API:
 
@@ -135,6 +138,97 @@ redirects there.
 - **Training/serving consistency.** Each request is rebuilt with the same
   column order and data types used in training before calling the model.
 
+## Explainability
+
+### Feature contributions (`/explain`)
+
+`/explain` returns the contribution of every feature to a prediction as
+**SHAP values**, computed with LightGBM's native TreeSHAP (`pred_contrib=True`),
+so no extra library is needed on a 512 MB server. Contributions are in log-odds:
+the baseline plus all contributions equals the model's output, which a test
+verifies.
+
+### Plain-language explanations (`/explain/narrative`)
+
+`/explain/narrative` asks an LLM to turn the SHAP values into a short paragraph
+for a loan officer, and relates it to excerpts from the
+[EBA Guidelines on loan origination and monitoring (EBA/GL/2020/06)](https://www.eba.europa.eu/regulation-and-policy/credit-risk/guidelines-on-loan-origination-and-monitoring),
+returned as numbered `sources` (document, section, page).
+
+Example (abridged):
+
+> The model shows that higher education strongly lowers the risk, and the
+> external credit scores of 0.55 and 0.6 also strongly lower the risk [...] the
+> loan amount of 500000 and the financed goods price of 450000 each raise the
+> risk moderately [...] Overall, the estimated probability of default is 4.4%,
+> which is below the baseline of 5.6% for a typical applicant. [...] verify
+> borrower information and [...] understand the model's inputs and outputs [1][2].
+
+**Faithfulness is enforced in code, not left to the prompt.** Early versions
+invented a currency, called a mid-range score "very good", described 5.5 years of
+employment as "short" and claimed the explanation "follows the EBA guidance".
+The fixes:
+
+- **Deterministic facts.** The code, not the LLM, interprets the numbers: it
+  converts days of employment into years, formats amounts without a currency, and
+  labels each contribution as strong, moderate, small or negligible with fixed
+  thresholds. The LLM never sees raw column names.
+- **Output guardrail.** The response is scanned for value judgements ("very good",
+  "high", "relatively"...) and compliance claims ("follows", "complies"...). If any
+  are found, the LLM is asked once to rewrite without them, and the event is logged.
+- **No decisions.** The prompt forbids recommending approval or rejection: the
+  estimate supports a human decision.
+
+**Provider.** Any OpenAI-compatible API works; the defaults point to
+[Groq](https://groq.com)'s free tier (`openai/gpt-oss-120b`), which does not use
+requests for training. Switching provider or model only means changing the
+`LLM_BASE_URL` and `LLM_MODEL` environment variables. Without `LLM_API_KEY` the
+endpoint returns `503`; provider failures return `502`.
+
+### Retrieval over regulation (RAG)
+
+The regulatory excerpts come from a retrieval index built offline by
+[`build_rag_index.py`](src/credit_risk_api/build_rag_index.py):
+
+1. The guidelines (pp. 12-59 and annexes, pp. 68-76) are split into overlapping
+   chunks that keep their section and page, with the repeated page header removed.
+2. Chunks are embedded locally with `BAAI/bge-small-en-v1.5` via
+   [fastembed](https://github.com/qdrant/fastembed): no API key, no data leaves
+   the machine.
+3. Each feature maps to a regulatory topic (e.g. the three external scores share
+   one), and the most relevant chunk for each topic is **retrieved once, at build
+   time**, and reviewed by hand.
+
+Because retrieval queries come from a closed set of topics rather than free
+text, the API needs **no embedding model and no vector database at runtime**: it
+picks the precomputed excerpts for the three strongest distinct topics of each
+application, plus the guidelines' section on automated credit models. For under
+200 chunks, NumPy cosine similarity replaces a vector database.
+
+**Retrieval was evaluated, not assumed.** The first index returned passages on
+ship financing and commercial real estate for consumer topics. Restricting the
+index to the guidelines on loan origination (excluding the executive summary,
+consultation feedback and the section on monitoring existing loans), removing
+page headers and wording queries for consumer lending fixed most topics. The
+evaluation also showed that a similarity threshold would not help: relevant and
+irrelevant chunks scored in the same 0.69-0.83 range. Citations in generated
+explanations were checked by hand against the cited excerpts.
+
+### Limitations and next steps
+
+- **Guardrails reduce, not eliminate, unwanted phrasing.** A blocklist catches
+  known wordings; paraphrases such as "as required by the guidelines" can slip
+  through. An LLM-as-a-judge check or human review on a sample would be the next
+  step.
+- **Citations are faithful but generic.** The explanation cites the excerpts
+  correctly but does not always link each one to a specific factor (e.g. that the
+  guidelines warn against collateral being a predominant criterion, relevant to
+  the goods price).
+- **One document.** Income-related retrieval is weak because the guidelines say
+  little about consumer income; adding the Consumer Credit Directive
+  ((EU) 2023/2225) would cover it.
+- **`sources` lists the excerpts given to the LLM**, not only those it cited.
+
 ## Quickstart
 
 Requires [uv](https://docs.astral.sh/uv/) and, for the container,
@@ -161,6 +255,21 @@ uv run python -m credit_risk_api.train
 
 ```bash
 uv run uvicorn credit_risk_api.api:app --reload
+```
+
+For `/explain/narrative`, put an API key in a `.env` file (ignored by git) and
+load it when starting the server:
+
+```bash
+echo 'LLM_API_KEY=your-groq-key' > .env
+uv run uvicorn credit_risk_api.api:app --reload --env-file .env
+```
+
+**Rebuild the retrieval index** (the index is included in the repository; this
+requires the guidelines PDF in `data/regulations/eba_gl_2020_06.pdf`):
+
+```bash
+uv run python -m credit_risk_api.build_rag_index
 ```
 
 **Run the tests** (API and drift monitoring):
@@ -195,6 +304,8 @@ directly from the `Dockerfile` in this repository:
   after the CI checks pass, so code with failing tests never reaches
   production; previous versions can be restored with a one-click rollback.
 - **Health checks.** Render polls `/health` to verify the service is up.
+- **Secrets.** The LLM API key is set as an environment variable in Render and
+  in a local `.env` file; it is never committed.
 - **Configurable port.** The container listens on the port given by the
   platform's `PORT` environment variable, falling back to 8000 locally, so the
   same image runs unchanged on Render and on a laptop.
@@ -271,6 +382,7 @@ credit-risk-api/
 ├── .github/workflows/
 │   └── ci.yml                 # CI: tests, Docker build and smoke test
 ├── models/                    # trained model, metadata and drift reference
+│   └── rag/                   # retrieval index: chunks, embeddings, retrieval results
 ├── notebooks/
 │   ├── 01_exploration.ipynb        # exploratory data analysis
 │   ├── 02_feature_ablation.ipynb   # impact of removing each feature
@@ -278,6 +390,8 @@ credit-risk-api/
 ├── src/credit_risk_api/
 │   ├── train.py               # training script
 │   ├── api.py                 # FastAPI service
+│   ├── llm.py                 # LLM explanations: prompt, retrieval context, guardrails
+│   ├── build_rag_index.py     # offline retrieval index over the EBA guidelines
 │   ├── drift.py               # PSI drift monitoring
 │   └── simulate_traffic.py    # simulated traffic for drift checks
 ├── tests/
@@ -295,10 +409,11 @@ credit-risk-api/
 - [x] **Phase 3 — Containerization and testing:** Docker image and pytest suite
 - [x] **Phase 4 — Deployment:** public endpoint on Render with continuous deployment
 - [x] **Phase 5 — CI/CD and monitoring:** GitHub Actions, structured prediction logs, PSI drift monitoring
-- [ ] **Phase 6 — LLM explanation layer:** natural-language explanations of
-  predictions, combining SHAP values with retrieval over credit regulations
+- [x] **Phase 6 — Explainability and LLM layer:** native SHAP values,
+  LLM-written explanations with output guardrails, retrieval over EU credit guidelines
 
 ## Tech stack
 
 Python 3.13 · uv · pandas · LightGBM · scikit-learn · FastAPI · Pydantic ·
-pytest · Docker · GitHub Actions · Render
+pytest · Docker · GitHub Actions · Render · Groq (OpenAI-compatible API) ·
+fastembed
