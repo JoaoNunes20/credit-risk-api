@@ -12,6 +12,8 @@ is to build everything around it the way it would be built in production.
 
 **Live API:** https://credit-risk-api-uo5r.onrender.com (interactive docs)
 
+**Technical report:** [docs/technical-report.md](docs/technical-report.md) ([PDF](docs/technical-report.pdf))
+
 > Hosted on Render's free tier: after 15 minutes without traffic the service
 > sleeps, so the first request can take up to a minute while it wakes up.
 
