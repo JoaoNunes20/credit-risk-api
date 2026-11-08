@@ -81,10 +81,19 @@ def test_sensitive_attributes_are_not_model_inputs():
         assert attribute in info["excluded_features"]
 
 
-def test_root_redirects_to_docs():
-    response = client.get("/", follow_redirects=False)
-    assert response.status_code == 307
-    assert response.headers["location"] == "/docs"
+def test_root_serves_the_demo_page():
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "Estimate risk" in response.text
+
+
+def test_demo_page_select_options_come_from_the_schema():
+    # The page fills its dropdowns from /openapi.json; check the enums are there.
+    props = client.get("/openapi.json").json()["components"]["schemas"]["LoanApplication"]["properties"]
+    assert "Cash loans" in props["name_contract_type"]["enum"]
+    occupations = [v for s in props["occupation_type"]["anyOf"] for v in s.get("enum", [])]
+    assert "Laborers" in occupations
 
 
 def test_prediction_is_logged(caplog):

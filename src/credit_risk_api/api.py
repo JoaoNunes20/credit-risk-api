@@ -12,12 +12,13 @@ from typing import Literal, get_args
 import joblib
 import pandas as pd
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from credit_risk_api import llm
 
 MODEL_DIR = Path("models")
+DEMO_PAGE = Path(__file__).parent / "static" / "index.html"
 
 # One JSON line per prediction on stdout, so the platform's log viewer
 # (or any log collector) can search and aggregate them.
@@ -155,8 +156,9 @@ def health() -> dict[str, str]:
 
 
 @app.get("/", include_in_schema=False)
-def root() -> RedirectResponse:
-    return RedirectResponse(url="/docs")
+def demo_page() -> FileResponse:
+    """Interactive demo page; the API itself is documented at /docs."""
+    return FileResponse(DEMO_PAGE)
 
 
 @app.get("/model-info")
